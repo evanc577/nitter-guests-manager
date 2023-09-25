@@ -1,6 +1,5 @@
 use std::io::{Cursor, SeekFrom};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time;
 
@@ -10,13 +9,40 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::Router;
 use serde::Deserialize;
-use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+use working_file::WorkingFile;
+
+mod working_file {
+    use std::path::{Path, PathBuf};
+
+    use tokio::fs::{File, OpenOptions};
+
+    pub struct WorkingFile {
+        path: PathBuf,
+    }
+
+    impl WorkingFile {
+        pub fn new(path: impl AsRef<Path>) -> Self {
+            Self {
+                path: path.as_ref().to_path_buf(),
+            }
+        }
+
+        pub async fn open(&self) -> Result<File, std::io::Error> {
+            OpenOptions::new()
+                .create(true)
+                .read(true)
+                .append(true)
+                .open(&self.path)
+                .await
+        }
+    }
+}
 
 struct AppState {
     auth: String,
-    dest_file: Mutex<File>,
+    dest_file: Mutex<WorkingFile>,
 }
 
 #[tokio::main]
@@ -24,17 +50,10 @@ async fn main() {
     // Read config from env vars
     let port = std::env::var("PORT").unwrap().parse().unwrap();
     let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port);
-    let dest_file_path = PathBuf::from(std::env::var_os("DEST_FILE").unwrap());
-    let dest_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(dest_file_path)
-        .await
-        .unwrap();
+    let dest_file_path = std::env::var_os("DEST_FILE").unwrap();
     let state = Arc::new(AppState {
         auth: std::env::var("AUTH").unwrap(),
-        dest_file: Mutex::new(dest_file),
+        dest_file: Mutex::new(WorkingFile::new(dest_file_path)),
     });
 
     // Start web server
@@ -74,7 +93,13 @@ async fn append(
     verify_auth(&state.auth, &headers)?;
 
     // Read all lines in body and append them to the file
-    let mut file = state.dest_file.lock().await;
+    let mut file = state
+        .dest_file
+        .lock()
+        .await
+        .open()
+        .await
+        .map_err(|_| ResponseError::Internal)?;
     file.seek(SeekFrom::End(0))
         .await
         .map_err(|_| ResponseError::Internal)?;
@@ -120,11 +145,17 @@ async fn prune(
     const MAX_AGE_SECS: i64 = MAX_AGE_DAYS * 24 * 60 * 60;
 
     // Read the guest accounts file
-    let mut file = state.dest_file.lock().await;
+    let mut file = state
+        .dest_file
+        .lock()
+        .await
+        .open()
+        .await
+        .map_err(|_| ResponseError::Internal)?;
     file.seek(SeekFrom::Start(0))
         .await
         .map_err(|_| ResponseError::Internal)?;
-    let mut lines = BufReader::new(&mut *file).lines();
+    let mut lines = BufReader::new(&mut file).lines();
 
     // Lines to keep
     let mut preserved_lines = Vec::new();
