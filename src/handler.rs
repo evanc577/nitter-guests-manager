@@ -12,7 +12,7 @@ use crate::AppState;
 
 pub enum ResponseError {
     Forbidden,
-    Internal,
+    Internal(String),
     InvalidJson,
 }
 
@@ -20,7 +20,10 @@ impl IntoResponse for ResponseError {
     fn into_response(self) -> axum::response::Response {
         match self {
             Self::Forbidden => (StatusCode::FORBIDDEN, "forbidden"),
-            Self::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal server error"),
+            Self::Internal(s) => {
+                eprintln!("internal error: {s}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            }
             Self::InvalidJson => (StatusCode::BAD_REQUEST, "invalid json"),
         }
         .into_response()
@@ -42,22 +45,25 @@ pub async fn append(
         .await
         .open()
         .await
-        .map_err(|_| ResponseError::Internal)?;
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
     file.seek(SeekFrom::End(0))
         .await
-        .map_err(|_| ResponseError::Internal)?;
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
     let cursor = Cursor::new(body);
     let deserializer = serde_json::Deserializer::from_reader(cursor);
-    let values = deserializer.into_iter::<serde_json::Value>();
+    let values: Vec<_> = deserializer.into_iter::<serde_json::Value>().collect();
     for value in values {
         let value = value.map_err(|_| ResponseError::InvalidJson)?;
-        let line = serde_json::to_string(&value).map_err(|_| ResponseError::Internal)?;
+        let line =
+            serde_json::to_string(&value).map_err(|e| ResponseError::Internal(e.to_string()))?;
         let line = format!("{}\n", line);
         file.write_all(line.as_bytes())
             .await
-            .map_err(|_| ResponseError::Internal)?;
+            .map_err(|e| ResponseError::Internal(e.to_string()))?;
     }
-    file.flush().await.map_err(|_| ResponseError::Internal)?;
+    file.flush()
+        .await
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
 
     Ok(())
 }
@@ -82,7 +88,7 @@ pub async fn prune(
     // Get the current time
     let current_time = time::UNIX_EPOCH
         .elapsed()
-        .map_err(|_| ResponseError::Internal)?
+        .map_err(|e| ResponseError::Internal(e.to_string()))?
         .as_secs() as i64;
     const MAX_AGE_DAYS: i64 = 25;
     const MAX_AGE_SECS: i64 = MAX_AGE_DAYS * 24 * 60 * 60;
@@ -94,10 +100,10 @@ pub async fn prune(
         .await
         .open()
         .await
-        .map_err(|_| ResponseError::Internal)?;
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
     file.seek(SeekFrom::Start(0))
         .await
-        .map_err(|_| ResponseError::Internal)?;
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
     let mut lines = BufReader::new(&mut file).lines();
 
     // Lines to keep
@@ -108,15 +114,15 @@ pub async fn prune(
     while let Some(line) = lines
         .next_line()
         .await
-        .map_err(|_| ResponseError::Internal)?
+        .map_err(|e| ResponseError::Internal(e.to_string()))?
     {
         let account: GuestAccount =
-            serde_json::from_str(&line).map_err(|_| ResponseError::Internal)?;
+            serde_json::from_str(&line).map_err(|e| ResponseError::Internal(e.to_string()))?;
         let id = account
             .user
             .id_str
             .parse::<u64>()
-            .map_err(|_| ResponseError::Internal)?;
+            .map_err(|e| ResponseError::Internal(e.to_string()))?;
         let ts = id_to_ts(id);
         if current_time - ts < MAX_AGE_SECS {
             preserved_lines.push(line);
@@ -124,18 +130,18 @@ pub async fn prune(
     }
 
     // Truncate the file and add all lines that should be preserved
-    file.set_len(0).await.map_err(|_| ResponseError::Internal)?;
+    file.set_len(0).await.map_err(|e| ResponseError::Internal(e.to_string()))?;
     file.seek(SeekFrom::Start(0))
         .await
-        .map_err(|_| ResponseError::Internal)?;
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
     for line in preserved_lines {
         let line = format!("{}\n", line);
         file.write_all(line.as_bytes())
             .await
-            .map_err(|_| ResponseError::Internal)?;
+            .map_err(|e| ResponseError::Internal(e.to_string()))?;
     }
 
-    file.flush().await.map_err(|_| ResponseError::Internal)?;
+    file.flush().await.map_err(|e| ResponseError::Internal(e.to_string()))?;
 
     Ok(())
 }
