@@ -30,6 +30,37 @@ impl IntoResponse for ResponseError {
     }
 }
 
+/// Get number of guest accounts
+pub async fn count(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<String, ResponseError> {
+    verify_auth(&state.auth, &headers)?;
+
+    let mut file = state
+        .dest_file
+        .lock()
+        .await
+        .open()
+        .await
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
+    file.seek(SeekFrom::Start(0))
+        .await
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
+    let mut lines = BufReader::new(&mut file).lines();
+    let mut count = 0;
+    while (lines
+        .next_line()
+        .await
+        .map_err(|e| ResponseError::Internal(e.to_string()))?)
+    .is_some()
+    {
+        count += 1;
+    }
+
+    Ok(count.to_string())
+}
+
 /// Append guest accounts to the guest accounts file
 pub async fn append(
     State(state): State<Arc<AppState>>,
@@ -130,7 +161,9 @@ pub async fn prune(
     }
 
     // Truncate the file and add all lines that should be preserved
-    file.set_len(0).await.map_err(|e| ResponseError::Internal(e.to_string()))?;
+    file.set_len(0)
+        .await
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
     file.seek(SeekFrom::Start(0))
         .await
         .map_err(|e| ResponseError::Internal(e.to_string()))?;
@@ -141,7 +174,9 @@ pub async fn prune(
             .map_err(|e| ResponseError::Internal(e.to_string()))?;
     }
 
-    file.flush().await.map_err(|e| ResponseError::Internal(e.to_string()))?;
+    file.flush()
+        .await
+        .map_err(|e| ResponseError::Internal(e.to_string()))?;
 
     Ok(())
 }

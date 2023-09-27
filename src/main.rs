@@ -1,9 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use axum::routing::post;
+use axum::routing::{post, get};
 use axum::Router;
-use handler::{append, prune};
+use handler::{append, prune, count};
 use tokio::sync::Mutex;
 use working_file::WorkingFile;
 
@@ -28,6 +28,7 @@ async fn main() {
 
     // Start web server
     let app = Router::new()
+        .route("/count", get(count))
         .route("/append", post(append))
         .route("/prune", post(prune))
         .with_state(state);
